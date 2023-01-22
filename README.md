@@ -8,6 +8,9 @@ A small tool to help automate resigning (and optionally modifying) Appx Packages
 
 ### Usage
 ```
+"Appx Re-Sign.exe" -a "Path to appx package" -p Publisher -o "Path to output folder"
+
+
   -a, --app-package      Required. The input Appx/Appxbundle package to be re-signed
 
   -p, --publisher        Required. The name of the publisher (Must match the AppxManifest.xml publisher). If the
