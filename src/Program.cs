@@ -684,7 +684,7 @@ namespace Package_Re_sign
                                 {
                                 progCreateCert:
                                     //Generate .cer from pfx area
-                                    var createFromPFXState = MakeCertFromPFX(pfxFile, outputFolder, pfxPassword);
+                                    var createFromPFXState = MakeCertFromPFX(pfxFile, outputFolder, packageName, pfxPassword);
                                     if (!createFromPFXState)
                                     {
                                         //When errors detected give ability to user to retry
@@ -709,6 +709,13 @@ namespace Package_Re_sign
                                     }
                                     CopyFilesRecursively(depsFolder, depsOutputFolder);
                                 }
+
+                                //Copy any default folders/files specified by config
+                                WriteInfo("Copy folders by config to output (if any)..");
+                                CopyFoldersByCofig(inputDirectory, outputFolder);
+                                WriteInfo("Copy files by config to output (if any)..");
+                                CopyFilesByCofig(inputDirectory, outputFolder);
+
                                 //Generate installer
                                 WriteInfo("Generating installer (.bat)");
                                 var expectedCertificateName = $"{packageName}.cer";
@@ -1092,11 +1099,11 @@ namespace Package_Re_sign
 
         #region Certificate helpers
         static string makeCertFromPFXDebugOutput = "";
-        static bool MakeCertFromPFX(string pfx, string output, string password = "")
+        static bool MakeCertFromPFX(string pfx, string output, string name, string password = "")
         {
             var pfxName = $"{Path.GetFileNameWithoutExtension(pfx)}";
-            var cerFile = $@"{output}\{pfxName}.cer";
-            var pvkFile = $@"{output}\{pfxName}.pvk";
+            var cerFile = $@"{output}\{name}.cer";
+
             WriteInfo("Generating certificate from pfx file..");
 
             Error[] errorsList = new Error[] {
@@ -1416,6 +1423,79 @@ namespace Package_Re_sign
                 WriteError("Error writing app settings");
             }
         }
+        static void CopyFoldersByCofig(string input, string output)
+        {
+            try
+            {
+                var folders = ConfigurationManager.AppSettings["foldersToCopy"];
+                if (isValidValue(folders))
+                {
+                    var folderArray = folders.Split('|');
+                    if(folderArray!=null && folderArray.Length > 0)
+                    {
+                        foreach(var folder in folderArray)
+                        {
+                            try
+                            {
+                                var folderPath = $@"{input}\{folder}";
+                                if (Directory.Exists(folderPath))
+                                {
+                                    var outputPath = $@"{output}\{folder}";
+                                    if (!Directory.Exists(outputPath))
+                                    {
+                                        Directory.CreateDirectory(outputPath);
+                                    }
+                                    CopyFilesRecursively(folderPath, outputPath);
+                                }
+                            }catch(Exception exp)
+                            {
+                                WriteError(exp.Message);
+                            }
+                        }
+                    }
+                }
+            }
+            catch(Exception ex)
+            {
+                WriteError(ex.Message);
+            }
+        }
+
+        static void CopyFilesByCofig(string input, string output)
+        {
+            try
+            {
+                var files = ConfigurationManager.AppSettings["filesToCopy"];
+                if (isValidValue(files))
+                {
+                    var filesArray = files.Split('|');
+                    if (filesArray != null && filesArray.Length > 0)
+                    {
+                        foreach (var file in filesArray)
+                        {
+                            try
+                            {
+                                var filePath = $@"{input}\{file}";
+                                if (File.Exists(filePath))
+                                {
+                                    var outputPath = $@"{output}\{file}";
+                                    File.Copy(filePath, outputPath, true);
+                                }
+                            }
+                            catch (Exception exp)
+                            {
+                                WriteError(exp.Message);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteError(ex.Message);
+            }
+        }
+
         #endregion
     }
     class Cert
