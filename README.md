@@ -26,7 +26,7 @@ Double click on `pkgrsn.exe` then follow the instructions
 
 ### Configuration
 
-**Congif file:** `pkgrsn.exe.Config`
+**Config file:** `pkgrsn.exe.Config`
 
 
 **Option:** `debugOutput`
