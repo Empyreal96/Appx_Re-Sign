@@ -40,7 +40,7 @@ namespace Package_Re_sign
             [Option('a', "package", Required = true, HelpText = "The input Appx/Appxbundle or Msix/MsixBundle package to be re-signed")]
             public string Package { get; set; }
 
-            [Option('p', "publisher", Required = true, HelpText = "The name of the publisher (Must match the AppxManifest.xml publisher).")]
+            [Option('p', "publisher", Required = false, HelpText = "The name of the publisher (Must match the AppxManifest.xml publisher).")]
             public string Publisher { get; set; }
 
             [Option('o', "output", Required = false, HelpText = "The desired output folder for the signed package")]
@@ -188,6 +188,10 @@ namespace Package_Re_sign
             var retryProcess = ReadUserInput("");
             return !compareInput(retryProcess, "n");
         }
+        static bool isArgsPassed()
+        {
+            return argsGlobal != null && argsGlobal.Length > 0;
+        }
         static string ReadUserInput(string param = "")
         {
             string input = "";
@@ -210,7 +214,7 @@ namespace Package_Re_sign
                             case "output":
                                 if (isValidValue(o.Output))
                                 {
-                                    input = o.Package;
+                                    input = o.Output;
                                     requestUserInput = false;
                                 }
                                 break;
@@ -236,14 +240,14 @@ namespace Package_Re_sign
                                 }
                                 break;
                             case "skip":
-                                if (argsGlobal.Contains("-k "))
+                                if (argsGlobal.Contains("-k ") || argsGlobal.Contains("--skip"))
                                 {
                                     input = o.SkipDefault ? "y" : "n";
                                     requestUserInput = false;
                                 }
                                 break;
                             case "modify":
-                                if (argsGlobal.Contains("-m "))
+                                if (argsGlobal.Contains("-m ") || argsGlobal.Contains("--modify"))
                                 {
                                     input = o.IsModify ? "y" : "n";
                                     requestUserInput = false;
@@ -346,7 +350,7 @@ namespace Package_Re_sign
         static string getPackagePublisher(string manifest)
         {
             string publisher = "";
-           
+
             try
             {
                 if (manifest != null && manifest.Length > 0)
@@ -354,12 +358,13 @@ namespace Package_Re_sign
                     MatchCollection mc = Regex.Matches(manifest, "Publisher=\\\"(?<name>[^\\\"]*)\\\"", RegexOptions.Multiline);
                     foreach (Match m in mc)
                     {
-                        if(m.Groups!=null && m.Groups.Count > 0)
+                        if (m.Groups != null && m.Groups.Count > 0)
                         {
                             try
                             {
                                 publisher = m.Groups["name"].Value;
-                            }catch(Exception ex)
+                            }
+                            catch (Exception ex)
                             {
                                 WriteError(ex.Message);
                                 //Not expected to happend, but in-case something went wrong
@@ -410,7 +415,8 @@ namespace Package_Re_sign
                     }
                     break;
                 }
-            }catch(Exception ex)
+            }
+            catch (Exception ex)
             {
                 WriteError(ex.Message);
             }
@@ -467,6 +473,11 @@ namespace Package_Re_sign
             bool modifyByDefault = false;
             string defaultPublisher = "";
 
+            Console.CancelKeyPress += (sender, eventArgs) =>
+            {
+                Console.ForegroundColor = ConsoleColor.Gray;
+            };
+
             prepareLogFile();
             try
             {
@@ -476,6 +487,7 @@ namespace Package_Re_sign
                 Console.Write($"Package Re-Sign tool ({appVersion})");
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine(" by Empyreal96");
+                WriteToLog($"Package Re-Sign tool ({appVersion}) by Empyreal96");
                 debugOutput("- Contributors: Bashar Astifan", true);
                 debugOutput("- GitHub: https://github.com/Empyreal96/Appx_Re-Sign", true);
                 WriteError("- This app provided AS-IS without any warranty");
@@ -500,22 +512,37 @@ namespace Package_Re_sign
             progInput:
                 newLine();
                 //Package input area
-                WriteInput($"Package path ({defaultKey} for picker): ");
+                if (isArgsPassed())
+                {
+                    WriteInput($"Package path: ");
+                }
+                else
+                {
+                    WriteInput($"Package path ({defaultKey} for picker): ");
+                }
                 inputPackage = ReadUserInput("package");
 
                 if (!isValidValue(inputPackage))
                 {
-                    OpenFileDialog openFileDialog = new OpenFileDialog();
-                    openFileDialog.Multiselect = false;
-                    openFileDialog.Filter = "Packages|*.appx;*.appxbundle;*.msix;*.msixbundle";
-                    DialogResult result = openFileDialog.ShowDialog();
-                    if (result == DialogResult.OK)
+                    if (!isArgsPassed())
                     {
-                        inputPackage = openFileDialog.FileName;
+                        OpenFileDialog openFileDialog = new OpenFileDialog();
+                        openFileDialog.Multiselect = false;
+                        openFileDialog.Filter = "Packages|*.appx;*.appxbundle;*.msix;*.msixbundle";
+                        DialogResult result = openFileDialog.ShowDialog();
+                        if (result == DialogResult.OK)
+                        {
+                            inputPackage = openFileDialog.FileName;
+                        }
+                        else
+                        {
+                            goto progInput;
+                        }
                     }
                     else
                     {
-                        goto progInput;
+                        WriteError("Input package is not valid!");
+                        goto progEnd;
                     }
                 }
                 cleanPath(ref inputPackage);
@@ -530,12 +557,20 @@ namespace Package_Re_sign
                 {
                     //File is not package
                     WriteError("Please enter appx/msix or appxbundle/msixbundle only!");
+                    if (isArgsPassed())
+                    {
+                        goto progEnd;
+                    }
                     goto progInput;
                 }
                 if (!File.Exists(inputPackage))
                 {
                     //File not exists
                     WriteError("File is not exists!");
+                    if (isArgsPassed())
+                    {
+                        goto progEnd;
+                    }
                     goto progInput;
                 }
 
@@ -551,7 +586,7 @@ namespace Package_Re_sign
                     WriteInfo("- Output      : Input location");
                     WriteInfo("- Publisher   : Same as source");
                     WriteInfo("- Certificate : Auto");
-                    WriteInfo("- Edit package: "+(isModify? "Yes":"No"));
+                    WriteInfo("- Edit package: " + (isModify ? "Yes" : "No"));
 
                     newLine();
                     WriteInput($"Is this correct? (y/n [{defaultKey} for 'y']): ", true);
@@ -607,6 +642,11 @@ namespace Package_Re_sign
                     }
                     else
                     {
+                        if (isArgsPassed())
+                        {
+                            WriteError("Output is not valid!");
+                            goto progEnd;
+                        }
                         goto progOutput;
                     }
                 }
@@ -668,11 +708,14 @@ namespace Package_Re_sign
 
                 if (!prePublisherSelected && !publisherSetByManifest)
                 {
-                    WriteInput($"Do you want to save it as default value? (y/n [{defaultKey} for 'y']): ", true);
-                    var saveDefaultPublisher = ReadUserInput();
-                    if (!compareInput(saveDefaultPublisher, "n"))
+                    if (!isArgsPassed())
                     {
-                        AddOrUpdateAppSettings("defaultPublisher", packagePublisher);
+                        WriteInput($"Do you want to save it as default value? (y/n [{defaultKey} for 'y']): ", true);
+                        var saveDefaultPublisher = ReadUserInput();
+                        if (!compareInput(saveDefaultPublisher, "n"))
+                        {
+                            AddOrUpdateAppSettings("defaultPublisher", packagePublisher);
+                        }
                     }
                 }
                 if (skipDefaultConfigs)
@@ -744,12 +787,20 @@ namespace Package_Re_sign
                         if (!isPFX(pfxFile))
                         {
                             WriteError("Please enter pfx file only!");
+                            if (isArgsPassed())
+                            {
+                                goto progEnd;
+                            }
                             goto progPFX;
                         }
                         if (!File.Exists(pfxFile))
                         {
                             //File not exists
                             WriteError("File is not exists!");
+                            if (isArgsPassed())
+                            {
+                                goto progEnd;
+                            }
                             goto progPFX;
                         }
                         prePFXSelected = true;
@@ -817,25 +868,36 @@ namespace Package_Re_sign
 
                 if (isValidValue(pfxPassword) && !prePasswordSelected)
                 {
-                    WriteInput($"Do you want to save it as default value? (y/n [{defaultKey} for 'y']): ", true);
-                    var saveDefaultPassword = ReadUserInput();
-                    if (!compareInput(saveDefaultPassword, "n"))
+                    if (!isArgsPassed())
                     {
-                        AddOrUpdateAppSettings("defaultPFXPassword", pfxPassword);
+                        WriteInput($"Do you want to save it as default value? (y/n [{defaultKey} for 'y']): ", true);
+                        var saveDefaultPassword = ReadUserInput();
+                        if (!compareInput(saveDefaultPassword, "n"))
+                        {
+                            AddOrUpdateAppSettings("defaultPFXPassword", pfxPassword);
+                        }
                     }
                 }
 
             progModify:
                 newLine();
                 //Package modify area
-                WriteInput($"Modify (y/n [{defaultKey} for {(modifyByDefault?'y':'n')}]): ");
+                WriteInput($"Modify (y/n [{defaultKey} for {(modifyByDefault ? 'y' : 'n')}]): ");
+
+                if (isArgsPassed())
+                {
+                    if (skipDefaultConfigs)
+                    {
+                        isModify = argsGlobal.Contains("--modify");
+                    }
+                }
+
                 if (!skipDefaultConfigs)
                 {
                     var modifyInput = ReadUserInput("modify");
-
                     if (!isValidValue(modifyInput))
                     {
-                        WriteInput($"Modify is {(modifyByDefault?"on":"off")}, correct? (y/n [{defaultKey} for 'y']): ", true);
+                        WriteInput($"Modify is {(modifyByDefault ? "on" : "off")}, correct? (y/n [{defaultKey} for 'y']): ", true);
                         var confirmModifyState = ReadUserInput();
                         if (compareInput(confirmModifyState, "n"))
                         {
@@ -1021,14 +1083,16 @@ namespace Package_Re_sign
                         goto progResign;
                     }
                 }
-
-                newLine();
-                WriteInput($"Do you want to re-sign another package? (y/n [{defaultKey} for 'y']): ", true);
-                var morePackages = ReadUserInput();
-                if (!compareInput(morePackages, "n"))
+                if (!isArgsPassed())
                 {
-                    Console.Clear();
-                    goto progBegin;
+                    newLine();
+                    WriteInput($"Do you want to re-sign another package? (y/n [{defaultKey} for 'y']): ", true);
+                    var morePackages = ReadUserInput();
+                    if (!compareInput(morePackages, "n"))
+                    {
+                        Console.Clear();
+                        goto progBegin;
+                    }
                 }
 
             }
@@ -1039,6 +1103,9 @@ namespace Package_Re_sign
                 Console.Clear();
                 goto progBegin;
             }
+        progEnd:
+            Console.ForegroundColor = ConsoleColor.Gray;
+            WriteToLog("App closed");
         }
         #endregion
 
@@ -1711,7 +1778,7 @@ namespace Package_Re_sign
             {
                 value = ConfigurationManager.AppSettings[key];
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 WriteError("Config file is missing, or something went wrong!");
                 WriteError(ex.Message);

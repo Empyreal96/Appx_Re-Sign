@@ -68,7 +68,7 @@ Files to be copied to the output package path (only name not full path)
 Note that it's preferred to use this app standalone
 
 ```
-pkgrsn.exe -a "Path to package" -p Publisher -o "Path to output folder"
+pkgrsn -a "Path to package" --skip [--modify]
 
 
   -a, --app-package      Required. The input package to be re-signed
