@@ -13,6 +13,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using CommandLine;
+using System.Windows.Forms;
+using System.Runtime.InteropServices;
+using static System.Net.Mime.MediaTypeNames;
+using System.Globalization;
+using System.Text.RegularExpressions;
+using System.Reflection;
 
 namespace Package_Re_sign
 {
@@ -23,14 +29,10 @@ namespace Package_Re_sign
         static string pvk2pfxTool = @".\tools\pvk2pfx.exe";
         static string signTool = @".\tools\signtool.exe";
         static string cmdTool = @"cmd.exe";
+        static string tempPath = @".\Temp";
         static string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
         static string logFile = @".\Logs\log.txt"; //Will be changed by `prepareLogFile()`
-
-#if DEGUB_OUTPUT
         static bool isDebugOutputEnabled = true;
-#else
-        static bool isDebugOutputEnabled = false;
-#endif
 
         #region Args define
         public class CommandOptions
@@ -38,29 +40,36 @@ namespace Package_Re_sign
             [Option('a', "package", Required = true, HelpText = "The input Appx/Appxbundle or Msix/MsixBundle package to be re-signed")]
             public string Package { get; set; }
 
-            [Option('p', "publisher", Required = true, HelpText = "The name of the publisher (Must match the AppxManifest.xml publisher). " +
-                "If the publisher is formatted like: \n\"CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US\" \nthen input into this app with quotes:\n" +
-                "\"Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US\"")]
+            [Option('p', "publisher", Required = true, HelpText = "The name of the publisher (Must match the AppxManifest.xml publisher).")]
             public string Publisher { get; set; }
 
             [Option('o', "output", Required = false, HelpText = "The desired output folder for the signed package")]
             public string Output { get; set; }
-            
+
             [Option('x', "pfx", Required = false, HelpText = "PFX file for package signing")]
             public string PfxFile { get; set; }
 
             [Option('s', "password", Required = false, HelpText = "PFX password")]
             public string PfxPassword { get; set; }
 
-            [Option('m', "modify", Required = false, HelpText = "(Optional) Use this switch to pause the process to allow modifications to the package before re-signing")]
+            [Option('m', "modify", Required = false, HelpText = "Allow package modification")]
             public bool IsModify { get; set; }
 
-            [Option('k', "skip", Required = false, HelpText = "(Optional) Use this switch to default configuration")]
+            [Option('k', "skip", Required = false, HelpText = "Use this switch to apply default configuration")]
             public bool SkipDefault { get; set; }
         }
         #endregion
 
         #region Helpers
+        static void CheckDebugOutputState()
+        {
+            string debugOutput = getFromAppSettings("debugOutput", "0");
+            if (isValidValue(debugOutput))
+            {
+                isDebugOutputEnabled = debugOutput.Equals("1");
+            }
+        }
+
         static bool isBundlePackage(string path)
         {
             return path.ToLower().EndsWith(".appxbundle") || path.ToLower().EndsWith(".msixbundle");
@@ -108,11 +117,11 @@ namespace Package_Re_sign
 
             return randChar;
         }
-        static void debugOutput(string message)
+        static void debugOutput(string message, bool force = false)
         {
-            if (isDebugOutputEnabled)
+            if (isDebugOutputEnabled || force)
             {
-                Console.ForegroundColor = ConsoleColor.Gray;
+                Console.ForegroundColor = ConsoleColor.DarkGray;
                 Console.WriteLine(message);
                 Console.ForegroundColor = ConsoleColor.White;
                 WriteToLog(message);
@@ -120,17 +129,36 @@ namespace Package_Re_sign
         }
         static void WriteInput(string input, bool question = false)
         {
-            Console.ForegroundColor = question ? ConsoleColor.Green : ConsoleColor.Magenta;
-            Console.Write(input);
+            if (input.Contains(defaultKey))
+            {
+                var parts = input.Split(new string[] { defaultKey }, StringSplitOptions.None);
+                if (parts != null && parts.Length == 2)
+                {
+                    Console.ForegroundColor = question ? ConsoleColor.Green : ConsoleColor.Magenta;
+                    Console.Write(parts[0]);
+                    Console.ForegroundColor = ConsoleColor.DarkYellow;
+                    Console.Write(defaultKey);
+                    Console.ForegroundColor = question ? ConsoleColor.Green : ConsoleColor.Magenta;
+                    Console.Write(parts[1]);
+                }
+            }
+            else
+            {
+                Console.ForegroundColor = question ? ConsoleColor.Green : ConsoleColor.Magenta;
+                Console.Write(input);
+            }
             Console.ForegroundColor = ConsoleColor.White;
             WriteToLog(input);
         }
-        public static void WriteError(string input)
+        public static void WriteError(string input, bool writeToLog = true)
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine(input);
             Console.ForegroundColor = ConsoleColor.White;
-            WriteToLog(input);
+            if (writeToLog)
+            {
+                WriteToLog(input);
+            }
         }
         static void WriteWarn(string input)
         {
@@ -164,12 +192,13 @@ namespace Package_Re_sign
         {
             string input = "";
             bool requestUserInput = true;
-            if (argsGlobal !=null && argsGlobal.Length > 0 && param.Length > 0)
+            Console.ForegroundColor = ConsoleColor.White;
+            if (argsGlobal != null && argsGlobal.Length > 0 && param.Length > 0)
             {
                 Parser.Default.ParseArguments<CommandOptions>(argsGlobal)
                     .WithParsed<CommandOptions>(o =>
                     {
-                       switch(param)
+                        switch (param)
                         {
                             case "package":
                                 if (isValidValue(o.Package))
@@ -256,32 +285,205 @@ namespace Package_Re_sign
             }
             catch (Exception ex)
             {
-
+                WriteError(ex.Message, false);
             }
         }
         static void newLine()
         {
             Console.WriteLine();
         }
+
+        static string getManifestContent(string package)
+        {
+            string manifest = "";
+            bool bundle = isBundlePackage(package);
+            string packageExt = ".appx";
+            string ext = Path.GetExtension(package);
+            if (compareInput(ext, ".msix") || compareInput(ext, ".msixbundle"))
+            {
+                packageExt = ".msix";
+            }
+            try
+            {
+                using (ZipArchive archive = ZipFile.OpenRead(package))
+                {
+                    string lookupName = bundle ? "" : "";
+                    foreach (ZipArchiveEntry entry in archive.Entries)
+                    {
+                        if (bundle)
+                        {
+                            //Find any sub package
+                            if (entry.Name.ToLower().EndsWith(packageExt))
+                            {
+                                string outputTempPackage = $@"{tempPath}\temp{packageExt}";
+                                entry.ExtractToFile(outputTempPackage, true);
+                                return getManifestContent(outputTempPackage);
+                            }
+                        }
+                        else
+                        {
+                            if (entry.Name.Equals("AppxManifest.xml"))
+                            {
+                                using (Stream stream = entry.Open())
+                                {
+                                    using (StreamReader reader = new StreamReader(stream))
+                                    {
+                                        manifest = reader.ReadToEnd();
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteError(ex.Message);
+            }
+            return manifest;
+        }
+        static string getPackagePublisher(string manifest)
+        {
+            string publisher = "";
+           
+            try
+            {
+                if (manifest != null && manifest.Length > 0)
+                {
+                    MatchCollection mc = Regex.Matches(manifest, "Publisher=\\\"(?<name>[^\\\"]*)\\\"", RegexOptions.Multiline);
+                    foreach (Match m in mc)
+                    {
+                        if(m.Groups!=null && m.Groups.Count > 0)
+                        {
+                            try
+                            {
+                                publisher = m.Groups["name"].Value;
+                            }catch(Exception ex)
+                            {
+                                WriteError(ex.Message);
+                                //Not expected to happend, but in-case something went wrong
+                                publisher = m.Value.Replace("\"", "").Replace("Publisher=", "");
+                            }
+                        }
+                        else
+                        {
+                            //Not expected to happend, but in-case something went wrong
+                            publisher = m.Value.Replace("\"", "").Replace("Publisher=", "");
+                        }
+                        break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteError(ex.Message);
+            }
+
+            return publisher;
+        }
+        static string getRegexGroupValue(string text, string regex, string group)
+        {
+            string value = "Unknown";
+            try
+            {
+                MatchCollection mc = Regex.Matches(text, regex, RegexOptions.Multiline);
+                foreach (Match m in mc)
+                {
+                    if (m.Groups != null && m.Groups.Count > 0)
+                    {
+                        try
+                        {
+                            value = m.Groups[group].Value;
+                        }
+                        catch (Exception ex)
+                        {
+                            WriteError(ex.Message);
+                            //Not expected to happend, but in-case something went wrong
+                            value = m.Value;
+                        }
+                    }
+                    else
+                    {
+                        //Not expected to happend, but in-case something went wrong
+                        value = m.Value;
+                    }
+                    break;
+                }
+            }catch(Exception ex)
+            {
+                WriteError(ex.Message);
+            }
+            return value;
+        }
+        static void printPackageInfo(string manifest)
+        {
+            try
+            {
+                if (manifest != null && manifest.Length > 0)
+                {
+                    newLine();
+                    string identityRegex = "Identity Name=\\\"(?<value>[^\\\"]*)\\\"";
+                    string identityValue = getRegexGroupValue(manifest, identityRegex, "value");
+
+                    string versionRegex = "\\s+Version=\\\"(?<value>[^\\\"]*)\\\"";
+                    string versionValue = getRegexGroupValue(manifest, versionRegex, "value");
+
+                    string minBuildRegex = "\\s+MinVersion=\\\"(?<value>[^\\\"]*)\\\"";
+                    string minBuildValue = getRegexGroupValue(manifest, minBuildRegex, "value");
+
+                    string testedBuildRegex = "\\s+MaxVersionTested=\\\"(?<value>[^\\\"]*)\\\"";
+                    string testedBuildValue = getRegexGroupValue(manifest, testedBuildRegex, "value");
+
+                    WriteInfo($"- Identity     : {identityValue}");
+                    WriteInfo($"- Version      : {versionValue}");
+                    WriteInfo($"- Min Build    : {minBuildValue}");
+                    WriteInfo($"- Tested Build : {testedBuildValue}");
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteError(ex.Message);
+            }
+        }
         #endregion
 
         #region Main app
         static string[] argsGlobal;
+        static string defaultKey = "[ENTER]";
+
+        [STAThread]
         static void Main(string[] args)
         {
             argsGlobal = args;
+            CheckDebugOutputState();
             Start();
         }
+
         static void Start()
         {
         progBegin:
             bool skipDefaultConfigs = false;
+            bool modifyByDefault = false;
+            string defaultPublisher = "";
+
             prepareLogFile();
             try
             {
                 //Print about info
-                Console.WriteLine("Package Re-Sign tool by Empyreal96");
-                WriteWarn("If you have (.pfx) put it near to the package");
+                var appVersion = Assembly.GetExecutingAssembly().GetName().Version;
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.Write($"Package Re-Sign tool ({appVersion})");
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine(" by Empyreal96");
+                debugOutput("- Contributors: Bashar Astifan", true);
+                debugOutput("- GitHub: https://github.com/Empyreal96/Appx_Re-Sign", true);
+                WriteError("- This app provided AS-IS without any warranty");
+                newLine();
+                //Print help info
+                WriteWarn("- If you have (.pfx) put it near to the package");
+                WriteWarn("- Check (.config) for more settings");
+                WriteError("- When you share this app be sure password isn't stored at (.config)");
                 Task.Delay(1000).Wait();
 
             progStart:
@@ -289,21 +491,39 @@ namespace Package_Re_sign
                 string outputFolder = "";
                 string packagePublisher = "";
                 string pfxFile = "";
-                bool isModify = false;
+
+                //Check default modify state
+                modifyByDefault = getFromAppSettings("modifyByDefault", "0").Equals("1");
+                bool isModify = modifyByDefault;
 
 
             progInput:
                 newLine();
                 //Package input area
-                WriteInput("Package path: ");
+                WriteInput($"Package path ({defaultKey} for picker): ");
                 inputPackage = ReadUserInput("package");
 
                 if (!isValidValue(inputPackage))
                 {
-                    goto progInput;
+                    OpenFileDialog openFileDialog = new OpenFileDialog();
+                    openFileDialog.Multiselect = false;
+                    openFileDialog.Filter = "Packages|*.appx;*.appxbundle;*.msix;*.msixbundle";
+                    DialogResult result = openFileDialog.ShowDialog();
+                    if (result == DialogResult.OK)
+                    {
+                        inputPackage = openFileDialog.FileName;
+                    }
+                    else
+                    {
+                        goto progInput;
+                    }
                 }
                 cleanPath(ref inputPackage);
                 debugOutput($"Input package: {inputPackage}");
+                if (!isDebugOutputEnabled)
+                {
+                    debugOutput($"Input package: {Path.GetFileName(inputPackage)}", true);
+                }
 
                 //Verify input
                 if (!isBundlePackage(inputPackage) && !isPackage(inputPackage))
@@ -322,12 +542,19 @@ namespace Package_Re_sign
             progSkipDefault:
                 newLine();
                 //Package modify area
-                WriteInput("Skip default config (y/n [default: y]): ");
+                WriteInput($"Apply default config (y/n [{defaultKey} for 'y']): ");
                 var skipDefaults = ReadUserInput("skip");
 
                 if (!isValidValue(skipDefaults))
                 {
-                    WriteInput("Skip defaults is on, correct? (y/n [default: y]): ", true);
+                    newLine();
+                    WriteInfo("- Output      : Input location");
+                    WriteInfo("- Publisher   : Same as source");
+                    WriteInfo("- Certificate : Auto");
+                    WriteInfo("- Edit package: "+(isModify? "Yes":"No"));
+
+                    newLine();
+                    WriteInput($"Is this correct? (y/n [{defaultKey} for 'y']): ", true);
                     var confirmSkipDefaultState = ReadUserInput();
                     if (compareInput(confirmSkipDefaultState, "n"))
                     {
@@ -335,12 +562,28 @@ namespace Package_Re_sign
                     }
                 }
                 skipDefaultConfigs = !compareInput(skipDefaults, "n");
-                debugOutput($"Skip defaults state: {(skipDefaultConfigs ? "Enabled" : "Disabled")}");
+                debugOutput($"Apply defaults state: {(skipDefaultConfigs ? "Enabled" : "Disabled")}", true);
+
+            progReadPackage:
+                newLine();
+                //Working directories
+                debugOutput($"Temp path: {tempPath}");
+
+                //Clean temp files
+                debugOutput($"Cleaning temporary files", true);
+                clearTempFiles(tempPath);
+
+                newLine();
+                WriteWarn("Reading package information...");
+                var manifestContent = getManifestContent(inputPackage);
+                printPackageInfo(manifestContent);
+                defaultPublisher = getPackagePublisher(manifestContent);
+                bool publisherSetByManifest = isValidValue(defaultPublisher);
 
             progOutput:
                 newLine();
                 //Package output area
-                WriteInput("Output path [default: package path]: ");
+                WriteInput($"Output path [{defaultKey} to use 'package path']: ");
                 if (!skipDefaultConfigs)
                 {
                     outputFolder = ReadUserInput("output");
@@ -349,11 +592,15 @@ namespace Package_Re_sign
                 {
                     //Let's assume that user missed the value or pressed 'enter' twice by mistake
                     //Ask before using package path as output
-                    WriteInput("Use package path for output? (y/n [default: y]): ", true);
+                    if (skipDefaultConfigs)
+                    {
+                        newLine();
+                    }
+                    WriteInput($"Use package path for output? (y/n [{defaultKey} for 'y']): ", true);
                     var usePackagePath = skipDefaultConfigs ? "y" : ReadUserInput();
                     if (!compareInput(usePackagePath, "n"))
                     {
-                        debugOutput("Using package path as output");
+                        debugOutput("Using package path as output", true);
                         var inputParent = Path.GetDirectoryName(inputPackage);
                         var outputNewDir = $"{inputParent}\\__PACKAGE_RESIGNED__";
                         outputFolder = outputNewDir;
@@ -366,7 +613,7 @@ namespace Package_Re_sign
                 cleanPath(ref outputFolder);
                 if (!Directory.Exists(outputFolder))
                 {
-                    debugOutput($"Output folder not exists, creating new one");
+                    debugOutput($"Output folder not exists, creating new one", true);
                     Directory.CreateDirectory(outputFolder);
                 }
                 debugOutput($"Output folder: {outputFolder}");
@@ -376,10 +623,13 @@ namespace Package_Re_sign
                 newLine();
                 //Package publisher area
                 bool prePublisherSelected = false;
-                string defaultPublisher = ConfigurationManager.AppSettings["defaultPublisher"];
+                if (defaultPublisher == null || defaultPublisher.Length == 0)
+                {
+                    defaultPublisher = getFromAppSettings("defaultPublisher");
+                }
                 if (isValidValue(defaultPublisher))
                 {
-                    WriteInput($"Publisher [default: {defaultPublisher}]: ");
+                    WriteInput($"Publisher [{defaultKey} for '{defaultPublisher}']: ");
                 }
                 else
                 {
@@ -393,7 +643,11 @@ namespace Package_Re_sign
                 {
                     if (isValidValue(defaultPublisher))
                     {
-                        WriteInput($"Do you want to use ({defaultPublisher})? (y/n [default: y]): ", true);
+                        if (skipDefaultConfigs)
+                        {
+                            newLine();
+                        }
+                        WriteInput($"Do you want to use ({defaultPublisher})? (y/n [{defaultKey} for 'y']): ", true);
                         var useDefaultPublisher = skipDefaultConfigs ? "y" : ReadUserInput();
                         if (!compareInput(useDefaultPublisher, "n"))
                         {
@@ -412,16 +666,20 @@ namespace Package_Re_sign
                 }
                 cleanPath(ref packagePublisher);
 
-                if (!prePublisherSelected)
+                if (!prePublisherSelected && !publisherSetByManifest)
                 {
-                    WriteInput($"Do you want to save it as default value? (y/n [default: y]): ", true);
+                    WriteInput($"Do you want to save it as default value? (y/n [{defaultKey} for 'y']): ", true);
                     var saveDefaultPublisher = ReadUserInput();
                     if (!compareInput(saveDefaultPublisher, "n"))
                     {
                         AddOrUpdateAppSettings("defaultPublisher", packagePublisher);
                     }
                 }
-                debugOutput($"Publisher: {packagePublisher}");
+                if (skipDefaultConfigs)
+                {
+                    newLine();
+                }
+                debugOutput($"Publisher: {packagePublisher}", true);
 
 
             progPFX:
@@ -436,8 +694,12 @@ namespace Package_Re_sign
                     if (isPFX(file))
                     {
                         WriteInfo($"PFX file detected ({Path.GetFileName(file)})");
-                        WriteInput($"Do you want to use it? (y/n [default: y]): ", true);
+                        WriteInput($"Do you want to use it? (y/n [{defaultKey} for 'y']): ", true);
                         var useDetectedPFX = skipDefaultConfigs ? "y" : ReadUserInput();
+                        if (skipDefaultConfigs)
+                        {
+                            debugOutput("Applied (y)", true);
+                        }
                         if (!compareInput(useDetectedPFX, "n"))
                         {
                             pfxFile = file;
@@ -448,17 +710,25 @@ namespace Package_Re_sign
                 }
                 if (!isValidValue(pfxFile))
                 {
-                    WriteInput("Certificate (pfx) [default: auto]: ");
+                    WriteInput($"Certificate (pfx) [{defaultKey} for 'auto']: ");
                     if (!skipDefaultConfigs)
                     {
                         pfxFile = ReadUserInput("pfx");
                     }
                     if (!isValidValue(pfxFile))
                     {
+                        if (skipDefaultConfigs)
+                        {
+                            newLine();
+                        }
                         //Let's assume that user missed the value or pressed 'enter' twice by mistake
                         //Ask before generating new certificate
-                        WriteInput("Auto generate certifcate? (y/n [default: y]): ", true);
+                        WriteInput($"Auto generate certifcate? (y/n [{defaultKey} for 'y']): ", true);
                         var generateAutoCertificate = skipDefaultConfigs ? "y" : ReadUserInput();
+                        if (skipDefaultConfigs)
+                        {
+                            debugOutput("Applied (y)", true);
+                        }
                         if (!compareInput(generateAutoCertificate, "n"))
                         {
                             pfxFile = "";
@@ -491,10 +761,10 @@ namespace Package_Re_sign
                 //PFX password area
                 string pfxPassword = "";
                 bool prePasswordSelected = false;
-                string defaultPassword = ConfigurationManager.AppSettings["defaultPFXPassword"];
+                string defaultPassword = getFromAppSettings("defaultPFXPassword");
                 if (isValidValue(defaultPassword))
                 {
-                    WriteInput($"PFX password [default: available]: ");
+                    WriteInput($"PFX password [{defaultKey} to use 'saved password']: ");
                 }
                 else
                 {
@@ -509,7 +779,11 @@ namespace Package_Re_sign
                 {
                     if (isValidValue(defaultPassword))
                     {
-                        WriteInput($"Do you want to use (default password)? (y/n [default: y]): ", true);
+                        if (skipDefaultConfigs)
+                        {
+                            newLine();
+                        }
+                        WriteInput($"Do you want to use (default password)? (y/n [{defaultKey} for 'y']): ", true);
                         var useDefaultPassword = skipDefaultConfigs ? "y" : ReadUserInput();
                         if (!compareInput(useDefaultPassword, "n"))
                         {
@@ -518,30 +792,32 @@ namespace Package_Re_sign
                         }
                         else
                         {
-                            WriteInput("Skip password? (y/n [default: y]): ", true);
+                            WriteInput($"Skip password? (y/n [{defaultKey} for 'y']): ", true);
                             var skipPasswordState = ReadUserInput();
                             if (compareInput(skipPasswordState, "n"))
                             {
                                 goto progPFXPassword;
                             }
+                            debugOutput("Skipped", true);
                             pfxPassword = "";
                         }
                     }
                     else
                     {
-                        WriteInput("Skip password? (y/n [default: y]): ", true);
+                        WriteInput($"Skip password? (y/n [{defaultKey} for 'y']): ", true);
                         var skipPasswordState = ReadUserInput();
                         if (compareInput(skipPasswordState, "n"))
                         {
                             goto progPFXPassword;
                         }
+                        debugOutput("Skipped", true);
                         pfxPassword = "";
                     }
                 }
 
                 if (isValidValue(pfxPassword) && !prePasswordSelected)
                 {
-                    WriteInput($"Do you want to save it as default value? (y/n [default: y]): ", true);
+                    WriteInput($"Do you want to save it as default value? (y/n [{defaultKey} for 'y']): ", true);
                     var saveDefaultPassword = ReadUserInput();
                     if (!compareInput(saveDefaultPassword, "n"))
                     {
@@ -552,48 +828,49 @@ namespace Package_Re_sign
             progModify:
                 newLine();
                 //Package modify area
-                WriteInput("Modify (y/n [default: n]): ");
+                WriteInput($"Modify (y/n [{defaultKey} for {(modifyByDefault?'y':'n')}]): ");
                 if (!skipDefaultConfigs)
                 {
                     var modifyInput = ReadUserInput("modify");
 
                     if (!isValidValue(modifyInput))
                     {
-                        WriteInput("Modify is off, correct? (y/n [default: y]): ", true);
+                        WriteInput($"Modify is {(modifyByDefault?"on":"off")}, correct? (y/n [{defaultKey} for 'y']): ", true);
                         var confirmModifyState = ReadUserInput();
                         if (compareInput(confirmModifyState, "n"))
                         {
                             goto progModify;
                         }
                     }
-                    isModify = compareInput(modifyInput, "y");
+                    else
+                    {
+                        isModify = compareInput(modifyInput, "y");
+                    }
                 }
-                debugOutput($"Modify state: {(isModify ? "Enabled" : "Disabled")}");
+                debugOutput($"Modify state: {(isModify ? "Enabled" : "Disabled")}", true);
 
 
             progResign:
                 newLine();
-                //Working directories
-                string tempPath = @".\Temp";
-                debugOutput($"Temp path: {tempPath}");
-
-                //Clean temp files
-                debugOutput($"Cleaning temporary files");
-                clearTempFiles(tempPath);
 
                 //Package basic info
                 bool isBundle = isBundlePackage(inputPackage);
-                debugOutput($"Is package bundle: {(isBundle ? "True" : "False")}");
+                debugOutput($"Is package bundle: {(isBundle ? "True" : "False")}", true);
 
                 string packageName = Path.GetFileNameWithoutExtension(inputPackage);
                 string packageNameWithEx = Path.GetFileName(inputPackage);
                 string packageExt = Path.GetExtension(inputPackage);
-                debugOutput($"Output package name: {packageName}");
+                debugOutput($"Output package name: {packageName}", true);
                 //Resolve output folder to avoid placing files in root
                 outputFolder = Path.Combine(outputFolder, packageName);
                 if (!Directory.Exists(outputFolder))
                 {
+
                     debugOutput($"Output folder ({Path.GetFileName(outputFolder)}) not exists, creating new one..");
+                    if (!isDebugOutputEnabled)
+                    {
+                        debugOutput($"Output folder not exists, creating new one..", true);
+                    }
                     Directory.CreateDirectory(outputFolder);
                 }
                 else
@@ -745,7 +1022,8 @@ namespace Package_Re_sign
                     }
                 }
 
-                WriteInput("Do you want to re-sign another package? (y/n [default: y]): ", true);
+                newLine();
+                WriteInput($"Do you want to re-sign another package? (y/n [{defaultKey} for 'y']): ", true);
                 var morePackages = ReadUserInput();
                 if (!compareInput(morePackages, "n"))
                 {
@@ -1185,7 +1463,7 @@ namespace Package_Re_sign
             string pvk = pvkFile.pvkPath;
             var makecert = new Process();
             makecert.StartInfo.FileName = makeCertTool;
-            string command = $"-r -h 0 -n \"CN={publisher}\" -pe -sv \"{pvk}\" \"{cer}\"";
+            string command = $"-r -h 0 -n \"{publisher}\" -pe -sv \"{pvk}\" \"{cer}\"";
             makecert.StartInfo.Arguments = command;
             debugOutput($"{makeCertTool} {command}");
             makecert.StartInfo.RedirectStandardOutput = true;
@@ -1240,7 +1518,8 @@ namespace Package_Re_sign
                     outputPVK.Write((uint)cspBlob.Length);
                     outputPVK.Write(cspBlob);
                 }
-            }catch(Exception ex)
+            }
+            catch (Exception ex)
             {
                 WriteError(ex.Message);
                 foundErrors = true;
@@ -1298,7 +1577,7 @@ namespace Package_Re_sign
             WriteInfo($"Signing package: {Path.GetFileName(package)}");
 
             Error[] errorsList = new Error[] {
-              new Error("0x8007000b", "Error, make sure Publisher matches the AppxManifest Publisher"),
+              new Error("0x8007000b", "Make sure Publisher matches the AppxManifest Publisher"),
               new Error("password is not correct", "The specified PFX password is not correct"),
             };
 
@@ -1396,7 +1675,8 @@ namespace Package_Re_sign
                         WriteError(ex.Message);
                     }
                 }
-            }catch(Exception ex)
+            }
+            catch (Exception ex)
             {
                 WriteError(ex.Message);
             }
@@ -1418,22 +1698,37 @@ namespace Package_Re_sign
                 configFile.Save(ConfigurationSaveMode.Modified);
                 ConfigurationManager.RefreshSection(configFile.AppSettings.SectionInformation.Name);
             }
-            catch (ConfigurationErrorsException)
+            catch (Exception ex)
             {
-                WriteError("Error writing app settings");
+                WriteError("Config file is missing, or something went wrong!");
+                WriteError(ex.Message);
             }
+        }
+        public static string getFromAppSettings(string key, string def = "")
+        {
+            string value = def;
+            try
+            {
+                value = ConfigurationManager.AppSettings[key];
+            }
+            catch(Exception ex)
+            {
+                WriteError("Config file is missing, or something went wrong!");
+                WriteError(ex.Message);
+            }
+            return value;
         }
         static void CopyFoldersByCofig(string input, string output)
         {
             try
             {
-                var folders = ConfigurationManager.AppSettings["foldersToCopy"];
+                var folders = getFromAppSettings("foldersToCopy");
                 if (isValidValue(folders))
                 {
                     var folderArray = folders.Split('|');
-                    if(folderArray!=null && folderArray.Length > 0)
+                    if (folderArray != null && folderArray.Length > 0)
                     {
-                        foreach(var folder in folderArray)
+                        foreach (var folder in folderArray)
                         {
                             try
                             {
@@ -1447,7 +1742,8 @@ namespace Package_Re_sign
                                     }
                                     CopyFilesRecursively(folderPath, outputPath);
                                 }
-                            }catch(Exception exp)
+                            }
+                            catch (Exception exp)
                             {
                                 WriteError(exp.Message);
                             }
@@ -1455,7 +1751,7 @@ namespace Package_Re_sign
                     }
                 }
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 WriteError(ex.Message);
             }
@@ -1465,7 +1761,7 @@ namespace Package_Re_sign
         {
             try
             {
-                var files = ConfigurationManager.AppSettings["filesToCopy"];
+                var files = getFromAppSettings("filesToCopy");
                 if (isValidValue(files))
                 {
                     var filesArray = files.Split('|');
