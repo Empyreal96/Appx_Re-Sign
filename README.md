@@ -19,12 +19,12 @@ A tool to help automate re-(packaging/signing) (and optionally modifying) Appx/M
 
 ## How to use?
 
-### Standalone (Recommended)
+## Standalone (Recommended)
 
 Double click on `pkgrsn.exe` then follow the instructions
 
 
-### Configuration
+## Configuration
 
 **Config file:** `pkgrsn.exe.Config`
 
@@ -63,7 +63,7 @@ Files to be copied to the output package path (only name not full path)
 
 
 
-### Using command (Optional)
+## Using command (Optional)
 
 Note that it's preferred to use this app standalone
 
