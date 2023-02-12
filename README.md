@@ -73,9 +73,9 @@ pkgrsn -a "Path to package" --skip [--modify]
 
   -a, --app-package      Required. The input package to be re-signed
 
-  -p, --publisher        Required. The name of the publisher (Must match the AppxManifest.xml publisher).
+  -p, --publisher        The name of the publisher (Must match the AppxManifest.xml publisher).
 
-  -o, --output-folder    Required. The desired output folder for the signed package
+  -o, --output-folder    The desired output folder for the signed package
   
   -x, --pfx              PFX file for package signing
   
