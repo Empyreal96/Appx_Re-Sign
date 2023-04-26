@@ -106,7 +106,8 @@ namespace Package_Re_sign
             }
             else
             {
-                Directory.Delete(tempFolder, true);
+                //Directory.Delete(tempFolder, true);
+                DeleteRecursive(new DirectoryInfo(tempFolder));
                 Directory.CreateDirectory(tempFolder);
             }
         }
@@ -1713,6 +1714,27 @@ namespace Package_Re_sign
         #endregion
 
         #region Extra helpers
+        public static void DeleteRecursive(DirectoryInfo baseDir)
+        {
+            if (!baseDir.Exists)
+                return;
+
+            foreach (var dir in baseDir.EnumerateDirectories())
+            {
+                DeleteRecursive(dir);
+            }
+            try
+            {
+                baseDir.Delete(true);
+            }catch(Exception ex)
+            {
+                ProcessStartInfo processInfo = new ProcessStartInfo();
+                processInfo.WindowStyle = ProcessWindowStyle.Hidden;
+                processInfo.FileName = "cmd.exe";
+                processInfo.Arguments = $"/C rd /s /q \"{baseDir.FullName}\"";
+                Process.Start(processInfo);
+            }
+        }
         private static void CopyFilesRecursively(string sourcePath, string targetPath)
         {
             try
